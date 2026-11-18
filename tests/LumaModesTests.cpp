@@ -22,10 +22,35 @@ unsigned long millis() { return fakeTime; }
 void afficherImage() {}
 #include "../LumaESP32/LumaTransition.h"
 #include "../LumaESP32/LumaAudio.h"
+#include "../LumaESP32/LumaMatrix.h"
 #include "../LumaESP32/LumaRPM.h"
 #include "../LumaESP32/LumaModes.h"
 
 int main() {
+  assert(indiceLED(0, 0, true, false, false) == 0);
+  assert(indiceLED(0, 7, true, false, false) == 7);
+  assert(indiceLED(1, 7, true, false, false) == 8);
+  assert(indiceLED(31, 0, true, false, false) == 255);
+  assert(indiceLED(31, 7, false, true, true) == 0);
+  assert(indiceLED(31, 6, false, true, true) == 63);
+  for (bool colonnes : {false, true}) {
+    for (bool droite : {false, true}) {
+      for (bool bas : {false, true}) {
+        bool visites[LARGEUR_MATRICE * HAUTEUR_MATRICE] = {};
+        for (int y = 0; y < HAUTEUR_MATRICE; y++) {
+          for (int x = 0; x < LARGEUR_MATRICE; x++) {
+            int index = indiceLED(x, y, colonnes, droite, bas);
+            assert(index >= 0 && index < LARGEUR_MATRICE * HAUTEUR_MATRICE);
+            assert(!visites[index]);
+            visites[index] = true;
+          }
+        }
+      }
+    }
+  }
+  assert(canalLED(255, 0) == 0 && canalLED(255, 100) == 255);
+  assert(canalLED(217, 40) == 87 && canalLED(133, 40) == 53);
+
   assert(composerRegime(image, 0, 6000));
   for (const auto &row : image) for (byte cell : row) assert(cell == 0);
   assert(composerRegime(image, 3000, 6000));

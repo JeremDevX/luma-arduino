@@ -1,23 +1,29 @@
 #include <Arduino.h>
+#include <Adafruit_NeoPixel.h>
 #include <esp_system.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include "LumaMatrix.h"
 
 constexpr int DIN = 4;
-constexpr int CS = 5;
-constexpr int CLK = 6;
-constexpr int MATRICES = 4;
+constexpr bool MATRICE_PAR_COLONNES = true;
+constexpr bool DIN_A_DROITE = false;
+constexpr bool DIN_EN_BAS = false;
+constexpr int OCTETS_PAR_LIGNE = LARGEUR_MATRICE / 8;
 constexpr int MAX_COLONNES = 960;
 
-#define SERVICE_UUID "7A2F0007-CB86-4B6D-8F78-38D24B9E1940"
+#define SERVICE_UUID "7A2F0008-CB86-4B6D-8F78-38D24B9E1940"
 #define WRITE_UUID   "7A2F0002-CB86-4B6D-8F78-38D24B9E1940"
 
-byte image[8][MATRICES];
-byte imageRecue[8][MATRICES];
-byte imageCible[8][MATRICES];
+Adafruit_NeoPixel panneau(LARGEUR_MATRICE * HAUTEUR_MATRICE, DIN, NEO_GRB + NEO_KHZ800);
+byte luminosite = 20;
+byte rouge = 217, vert = 255, bleu = 133;
+byte image[HAUTEUR_MATRICE][OCTETS_PAR_LIGNE];
+byte imageRecue[HAUTEUR_MATRICE][OCTETS_PAR_LIGNE];
+byte imageCible[HAUTEUR_MATRICE][OCTETS_PAR_LIGNE];
 byte colonnes[MAX_COLONNES];
 byte reception[MAX_COLONNES];
 int largeur = 0, largeurAttendue = 0, recues = 0;
@@ -35,24 +41,18 @@ bool prochaineRevelation = false, revelationFixe = false, revelationDefilante = 
 unsigned long debutRevelation = 0, dernierRenduRevelation = 0;
 SemaphoreHandle_t verrou;
 
-void envoyerAToutes(byte adresse, byte valeur) {
-  digitalWrite(CS, LOW);
-  for (int i = 0; i < MATRICES; i++) {
-    shiftOut(DIN, CLK, MSBFIRST, adresse);
-    shiftOut(DIN, CLK, MSBFIRST, valeur);
-  }
-  digitalWrite(CS, HIGH);
-}
-
 void afficherImage() {
-  for (int ligne = 0; ligne < 8; ligne++) {
-    digitalWrite(CS, LOW);
-    for (int matrice = 0; matrice < MATRICES; matrice++) {
-      shiftOut(DIN, CLK, MSBFIRST, ligne + 1);
-      shiftOut(DIN, CLK, MSBFIRST, image[ligne][matrice]);
+  const uint32_t couleur = panneau.Color(canalLED(rouge, luminosite),
+                                        canalLED(vert, luminosite),
+                                        canalLED(bleu, luminosite));
+  for (int y = 0; y < HAUTEUR_MATRICE; y++) {
+    for (int x = 0; x < LARGEUR_MATRICE; x++) {
+      const bool allumee = image[y][x / 8] & (0x80 >> (x % 8));
+      panneau.setPixelColor(indiceLED(x, y, MATRICE_PAR_COLONNES, DIN_A_DROITE, DIN_EN_BAS),
+                           allumee ? couleur : 0);
     }
-    digitalWrite(CS, HIGH);
   }
+  panneau.show();
 }
 
 #include "LumaTransition.h"
@@ -73,15 +73,15 @@ void afficherPages(unsigned long maintenant) {
 void afficherDefilement() {
   int gauche = revelationDefilante ? 0 : 32 - position;
   for (int ligne = 0; ligne < 8; ligne++) {
-    for (int matrice = 0; matrice < MATRICES; matrice++) {
+    for (int groupe = 0; groupe < OCTETS_PAR_LIGNE; groupe++) {
       byte valeur = 0;
       for (int colonne = 0; colonne < 8; colonne++) {
-        int source = matrice * 8 + colonne - gauche;
+        int source = groupe * 8 + colonne - gauche;
         if (source >= 0 && source < largeur && (colonnes[source] & (0x80 >> ligne))) {
           valeur |= 0x80 >> colonne;
         }
       }
-      image[ligne][matrice] = valeur;
+      image[ligne][groupe] = valeur;
     }
   }
   if (revelationDefilante) {
@@ -103,7 +103,7 @@ class Commandes : public BLECharacteristicCallbacks {
     if (data.length() == 17 && (commande == 0x20 || commande == 0x21)) {
       int partie = commande - 0x20;
       if (partie == 0 || premierePartieRecue) {
-        for (int i = 0; i < 16; i++) imageRecue[partie * 4 + i / MATRICES][i % MATRICES] = (byte)data[i + 1];
+        for (int i = 0; i < 16; i++) imageRecue[partie * 4 + i / OCTETS_PAR_LIGNE][i % OCTETS_PAR_LIGNE] = (byte)data[i + 1];
         if (partie == 0) premierePartieRecue = true;
         else {
           premierePartieRecue = false;
@@ -126,9 +126,11 @@ class Commandes : public BLECharacteristicCallbacks {
           afficherImage();
         }
       }
-    } else if (data.length() == 2 && commande == 0x0A && (byte)data[1] <= 15) {
-      envoyerAToutes(0x0A, (byte)data[1]);
-      envoyerAToutes(0x0C, (byte)data[1] == 0 ? 0 : 1);
+    } else if (data.length() == 5 && commande == 0x0A && (byte)data[1] <= 100) {
+      luminosite = (byte)data[1];
+      rouge = (byte)data[2];
+      vert = (byte)data[3];
+      bleu = (byte)data[4];
     } else if (data.length() == 4 && commande == 0x30) {
       int taille = (byte)data[1] | ((byte)data[2] << 8);
       largeurAttendue = taille > 0 && taille <= MAX_COLONNES && (byte)data[3] > 0 ? taille : 0;
@@ -277,17 +279,8 @@ class Connexion : public BLEServerCallbacks {
 };
 
 void setup() {
-  pinMode(DIN, OUTPUT);
-  pinMode(CLK, OUTPUT);
-  pinMode(CS, OUTPUT);
-  digitalWrite(CS, HIGH);
-  digitalWrite(CLK, LOW);
-  envoyerAToutes(0x0F, 0);
-  envoyerAToutes(0x0C, 1);
-  envoyerAToutes(0x09, 0);
-  envoyerAToutes(0x0B, 7);
-  envoyerAToutes(0x0A, 3);
-  for (byte ligne = 1; ligne <= 8; ligne++) envoyerAToutes(ligne, 0);
+  panneau.begin();
+  panneau.show();
 
   verrou = xSemaphoreCreateMutex();
   if (!verrou) return;
